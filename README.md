@@ -1,6 +1,29 @@
-# ShieldScan
+# ShieldScan v2.0
 
-A Windows rootkit and threat detection tool with a dark-themed GUI, ML-powered classification, and a local RAG-based false-positive suppressor.
+> Windows rootkit & advanced threat detector — cross-view process snapshots, kernel driver analysis, registry persistence scanning, file integrity monitoring, and Random Forest ML classification. 100% offline.
+
+---
+
+## How It Works
+
+Rootkits survive by intercepting the very OS calls that security tools rely on to list processes, sockets, and drivers. ShieldScan's core technique is the **cross-view snapshot**: at the start of every scan, it queries multiple completely independent OS APIs simultaneously. A rootkit can tamper with one source, but it cannot intercept all of them at the same moment.
+
+```
+  Same moment in time — three independent views of running processes:
+
+  psutil                  WMIC                    tasklist
+  (NtQuerySysInfo)        (WMI subsystem)         (Win32 API)
+  ──────────────          ──────────────          ──────────────
+  PID 1044                PID 1044                PID 1044
+  PID 2304                PID 1188  ←             PID 1188  ←
+  PID 4412                PID 2304                PID 2304
+                          PID 4412                PID 4412
+
+  PID 1188 is visible to WMIC and tasklist but hidden from psutil
+  → Flagged as a hidden process (kernel rootkit indicator)
+```
+
+The same cross-view approach is applied to network sockets (psutil vs netstat) and kernel drivers (driverquery vs registry).
 
 ---
 
@@ -8,19 +31,19 @@ A Windows rootkit and threat detection tool with a dark-themed GUI, ML-powered c
 
 | Module | What it checks |
 |---|---|
-| **Process Scanner** | Hidden processes (WMIC vs psutil cross-check) |
-| **Network Scanner** | Hidden / orphan sockets, known malware ports |
-| **Driver Scanner** | Unsigned / suspicious kernel drivers |
-| **Registry Scanner** | Autorun persistence keys, IFEO hijacks |
-| **File Integrity** | SSDT hooks, executable tampering |
-| **Persistence Scanner** | Scheduled tasks, services, WMI subscriptions, LNK files |
-| **Memory / Volatility** | DKOM, process hollowing, injected shellcode |
+| **Process Scanner** | Hidden PIDs — cross-view: psutil vs WMIC vs tasklist. Masquerade detection (wrong exe path), temp-dir launches, bad parent relationships |
+| **Network Scanner** | Hidden sockets — psutil vs netstat -ano. Known malware/C2 ports (4444, 1337, 9050 …) with per-process whitelist |
+| **Driver Scanner** | Hidden drivers — driverquery vs registry. Unsigned, suspicious-path, or no-description kernel drivers |
+| **Registry Scanner** | Autorun keys (HKCU/HKLM Run, RunOnce), Winlogon hijack, IFEO debugger hijack, BootExecute |
+| **Persistence Scanner** | Scheduled tasks, WMI subscriptions, startup folders, services in temp dirs, AppInit_DLLs, LSA packages |
+| **File Integrity Monitor** | SHA-256 hashes of critical Windows binaries (ntoskrnl, ntdll, kernel32, lsass …) compared against baseline |
+| **Memory / Volatility** | DKOM, process hollowing, injected shellcode (requires Volatility 3 — optional) |
 
-**ML Threat Classifier** — stacking ensemble (RandomForest + ExtraTrees + GradientBoosting + XGBoost) with a LogisticRegression meta-learner trained on 5-fold OOF probabilities.
+**Random Forest ML Classifier** — 500-tree forest with balanced class weights, trained on a 35-feature vector extracted from every finding. Benchmarked as the best-performing model for this dataset (see ML section below).
 
-**RAG False-Positive Filter** — local-only knowledge base (JSON + difflib fuzzy matching). No data ever leaves the machine.
+**RAG False-Positive Filter** — local-only knowledge base (JSON + difflib fuzzy matching). Suppresses known-benign software before results reach the user. No data ever leaves the machine.
 
-**Email Reports** — sends inline HTML scan reports via your own SMTP server (Gmail / Outlook / custom).
+**Email Reports** — inline HTML scan reports via your own SMTP server (Gmail / Outlook / custom).
 
 ---
 
@@ -28,45 +51,55 @@ A Windows rootkit and threat detection tool with a dark-themed GUI, ML-powered c
 
 - Windows 10 / 11
 - Python 3.10+
-- Administrator privileges recommended (required for driver/memory scans)
+- Administrator privileges recommended (required for driver / kernel scans)
 
 ---
 
 ## Setup
 
-**1. Install Python dependencies**
-```
+**1. Install dependencies**
+```bash
 pip install -r requirements.txt
 ```
 
-For XGBoost support (improves ML accuracy):
-```
-pip install xgboost
-```
-
-For "Save Report as Image" support:
-```
-pip install Pillow
-```
-
-**2. Clone Volatility3** (required for memory dump analysis)
-```
+**2. Clone Volatility 3** *(optional — only needed for memory dump analysis)*
+```bash
 git clone https://github.com/volatilityfoundation/volatility3.git Tools/volatility3
 ```
-
-Volatility3 is not bundled in this repo — it must be cloned separately into `Tools/volatility3/`.
-All other scan modules (process, network, driver, registry, FIM, persistence) work without it.
+All other scan modules work without it.
 
 ---
 
 ## Quick Start
 
-```
+Double-click **`Tools\launch.bat`** — it auto-elevates to Administrator.
+
+Or from a terminal:
+```bash
 cd RootkitScannerProject\Tools
-python gui.py
+python gui_restored.py
 ```
 
-Or double-click **`Tools\launch.bat`** — it will prompt for elevation automatically.
+**Dev / hot-reload mode** (auto-restarts the GUI on every save):
+```bash
+pip install watchdog   # one-time
+python dev.py          # watches gui_restored.py; Ctrl+C to stop
+python dev.py --all    # watch all .py files in Tools/
+```
+
+---
+
+## GUI Overview
+
+| Tab | Contents |
+|---|---|
+| **Scan Output** | Live scan results with severity colour-coding and ML verdict |
+| **History** | All previous scans with score, verdict, and diff comparison |
+| **Model Info** | Architecture, feature engineering, performance metrics, benchmark |
+| **Dashboard** | Threat trend chart, quick actions, ML snapshot, recent scans |
+| **About** | Full explanation of how ShieldScan works — start here |
+
+**Login features** — local account system (SHA-256 hashed passwords), account registration, and **Forgot Password** reset dialog.
 
 ---
 
@@ -75,26 +108,27 @@ Or double-click **`Tools\launch.bat`** — it will prompt for elevation automati
 ```
 RootkitScannerProject/
 ├── Tools/
-│   ├── gui.py                  # Main GUI (tkinter)
+│   ├── gui_restored.py         # Main GUI (tkinter) — all features
+│   ├── dev.py                  # Hot-reload dev runner (watchdog / polling)
 │   ├── main.py                 # CLI entry point
 │   ├── launch.bat              # Windows launcher (auto-elevates)
-│   ├── process_analyzer.py     # Hidden process detection
+│   ├── process_analyzer.py     # Hidden process detection (cross-view)
+│   ├── rootkit_detector.py     # Process heuristics (masquerade, temp-path …)
 │   ├── network_scanner.py      # Socket / port anomaly detection
 │   ├── driver_scanner.py       # Kernel driver inspection
 │   ├── registry_scanner.py     # Autorun / persistence registry checks
-│   ├── fim_scanner.py          # File integrity monitoring
-│   ├── persistence_scanner.py  # Tasks, services, WMI, LNK
+│   ├── fim_scanner.py          # File integrity monitoring (SHA-256)
+│   ├── persistence_scanner.py  # Tasks, services, WMI, LSA, AppInit
 │   ├── memory_capture.py       # Volatility memory acquisition
 │   ├── volatility_analyzer.py  # Volatility 3 wrapper
 │   ├── rag_filter.py           # Local RAG false-positive filter
 │   ├── baseline_manager.py     # Baseline capture & diff
-│   ├── rootkit_detector.py     # Orchestrator
 │   ├── config.py               # Settings
 │   ├── knowledge_base/
-│   │   └── benign_entries.json # RAG knowledge base (publishers, tasks, paths)
+│   │   └── benign_entries.json # RAG knowledge base
 │   └── ml_model/
-│       ├── threat_model.py     # Stacking ensemble classifier
-│       ├── model_data.py       # Built-in training samples
+│       ├── threat_model.py     # Random Forest classifier
+│       ├── model_data.py       # Built-in training samples (180 samples, 16 classes)
 │       ├── train.py            # Standalone training script
 │       ├── kaggle_fetcher.py   # Optional Kaggle data augmentation
 │       └── remediation.py      # MITRE-mapped remediation steps
@@ -109,332 +143,165 @@ RootkitScannerProject/
 
 The model auto-trains from built-in data on first run. To retrain manually:
 
-```
+```bash
 cd Tools
-python ml_model/train.py                   # built-in data only
+python ml_model/train.py                   # built-in data only (default)
 python ml_model/train.py --kaggle          # augment with Kaggle datasets
-python ml_model/train.py --no-xgb         # 3-model stack (skip XGBoost)
-python ml_model/train.py --max-rows 4000  # limit Kaggle rows per dataset
+python ml_model/train.py --max-rows 4000  # limit rows per Kaggle dataset
 ```
 
-Kaggle augmentation requires a `~/.kaggle/kaggle.json` API key.
+Kaggle augmentation requires `~/.kaggle/kaggle.json` (Kaggle API key).
 
 ---
 
-## ML Model — Stacking Ensemble (Deep Dive)
+## ML Model — Random Forest (Deep Dive)
 
-### What is a Stacking Ensemble?
+### Why Random Forest?
 
-A stacking ensemble (also called *stacked generalization*) is a technique where
-multiple machine learning models — called **base learners** — are trained on the
-same data. Instead of voting or averaging their outputs, a separate model called
-the **meta-learner** is trained to *learn from the base learners' outputs*. It
-figures out which base model to trust more in which situation, producing a final
-prediction that is stronger than any single model could achieve alone.
+ShieldScan's classifier was benchmarked against a full stacking ensemble (Random Forest + Extra Trees + Gradient Boosting + XGBoost with a Logistic Regression meta-learner). Results on the built-in dataset:
 
 ```
-                        ┌─────────────────────────────────────┐
-                        │         RAW SCAN FINDING            │
-                        │  { reason, severity, port, name }   │
-                        └──────────────┬──────────────────────┘
-                                       │
-                                       ▼
-                        ┌─────────────────────────────────────┐
-                        │        FEATURE EXTRACTION           │
-                        │  35 numeric features extracted from │
-                        │  keywords, port numbers, severity,  │
-                        │  process names, path indicators     │
-                        └──────────────┬──────────────────────┘
-                                       │
-                                       ▼
-                        ┌─────────────────────────────────────┐
-                        │         STANDARD SCALER             │
-                        │  Normalizes all features to mean=0  │
-                        │  std=1 so no feature dominates      │
-                        └──────────────┬──────────────────────┘
-                                       │
-                         ┌─────────────┴──────────────┐
-                         │   STACKING ENSEMBLE LAYER  │
-                         │                            │
-                  ┌──────▼──────┐            ┌────────▼────────┐
-                  │  BASE LAYER │            │   META LAYER    │
-                  │             │            │                 │
-          ┌───────┴──────────┐  │            │  Logistic       │
-          │                  │  │   OOF      │  Regression     │
-          │  ┌─────────────┐ │  │ probas ──► │                 │
-          │  │Random Forest│ │  │            │  Learns WHICH   │
-          │  │ 200 trees   │ │  │            │  base model to  │
-          │  └─────────────┘ │  │            │  trust in each  │
-          │  ┌─────────────┐ │  │            │  region of      │
-          │  │ Extra Trees │ │  │            │  feature space  │
-          │  │ 200 trees   │ │  │            │                 │
-          │  └─────────────┘ │  │            └────────┬────────┘
-          │  ┌─────────────┐ │  │                     │
-          │  │  Gradient   │ │  │                     │
-          │  │  Boosting   │ │  │                     ▼
-          │  │ 150 trees   │ │  │      ┌──────────────────────────┐
-          │  └─────────────┘ │  │      │       FINAL OUTPUT       │
-          │  ┌─────────────┐ │  │      │                          │
-          │  │   XGBoost   │ │  │      │  category   : ROOTKIT    │
-          │  │ 200 trees   │ │  │      │  confidence : 0.94       │
-          │  │ (optional)  │ │  │      │  is_benign  : False      │
-          │  └─────────────┘ │  │      │  mitre      : [T1014,…]  │
-          └──────────────────┘  │      │  steps      : [...]      │
-                                │      └──────────────────────────┘
-                                └────────────────────────────────────┘
+  ┌─────────────────────┬──────────┬──────────┐
+  │ Model               │ Accuracy │ F1 Macro │
+  ├─────────────────────┼──────────┼──────────┤
+  │ Random Forest       │  93.89%  │  0.9466  │  ← ShieldScan
+  │ Extra Trees         │  92.22%  │  0.9306  │
+  │ XGBoost             │  88.89%  │  0.8992  │
+  │ Gradient Boosting   │  88.89%  │  0.8922  │
+  │ Stacking Ensemble   │  87.22%  │  0.8841  │  ← worse than any single model
+  └─────────────────────┴──────────┴──────────┘
+
+  Dataset: 180 samples · 16 threat categories · 5-fold stratified CV
+```
+
+With only 180 samples across 16 classes (≈11 samples per class), the stacking meta-learner adds noise rather than signal — it overfits to the OOF probability patterns instead of the underlying threat features. Random Forest alone gives the best bias-variance trade-off.
+
+---
+
+### Architecture
+
+```
+  Raw Scan Finding
+  { reason, severity, port, name, scan_type }
+           │
+           ▼
+  Feature Extraction  →  35-dimensional numeric vector
+           │
+           ▼
+  StandardScaler  →  Z-score normalisation (mean=0, std=1)
+           │
+           ▼
+  RandomForestClassifier
+  ┌──────────────────────────────────────────┐
+  │  500 decision trees                      │
+  │  Each tree trained on a random subset    │
+  │  of samples (bootstrap) and features     │
+  │  (sqrt of 35 = ~6 features per split)    │
+  │  class_weight = "balanced"               │
+  │  (rare threat classes get more weight)   │
+  └──────────────────┬───────────────────────┘
+                     │  majority vote across all 500 trees
+                     ▼
+  Output:  category="ROOTKIT_PROCESS"  confidence=0.94
+           mitre=["T1014"]  steps=[...]
 ```
 
 ---
 
-### How Training Works — 5-Fold Out-of-Fold (OOF)
+### Feature Extraction — 35 Features
 
-The key challenge in stacking is: if the meta-learner trains on the same
-predictions the base models made on their own training data, it overfits.
-The solution is **Out-of-Fold (OOF) predictions**.
-
-The training data is split into 5 equal folds. For each fold:
-- The base models are trained on the other 4 folds
-- They predict on the held-out fold (data they have never seen)
-- These predictions are stored as OOF probabilities
-
-After all 5 folds, every training sample has an OOF prediction. The
-meta-learner is then trained on these OOF probabilities — honest predictions
-that were never "seen" during base model training.
+Every scan finding is converted into a fixed-length numeric vector:
 
 ```
-  Full Training Dataset  (e.g. 1000 samples)
-  ─────────────────────────────────────────────────────────────
-  │  Fold 1  │  Fold 2  │  Fold 3  │  Fold 4  │  Fold 5     │
-  ─────────────────────────────────────────────────────────────
-
-  Round 1: Train on Folds 2+3+4+5 → Predict Fold 1
-  ┌──────────┬──────────┬──────────┬──────────┬─────────────┐
-  │ PREDICT  │  train   │  train   │  train   │   train     │
-  └──────────┴──────────┴──────────┴──────────┴─────────────┘
-
-  Round 2: Train on Folds 1+3+4+5 → Predict Fold 2
-  ┌──────────┬──────────┬──────────┬──────────┬─────────────┐
-  │  train   │ PREDICT  │  train   │  train   │   train     │
-  └──────────┴──────────┴──────────┴──────────┴─────────────┘
-
-  Round 3: Train on Folds 1+2+4+5 → Predict Fold 3
-  ┌──────────┬──────────┬──────────┬──────────┬─────────────┐
-  │  train   │  train   │ PREDICT  │  train   │   train     │
-  └──────────┴──────────┴──────────┴──────────┴─────────────┘
-
-  Round 4: Train on Folds 1+2+3+5 → Predict Fold 4
-  ┌──────────┬──────────┬──────────┬──────────┬─────────────┐
-  │  train   │  train   │  train   │ PREDICT  │   train     │
-  └──────────┴──────────┴──────────┴──────────┴─────────────┘
-
-  Round 5: Train on Folds 1+2+3+4 → Predict Fold 5
-  ┌──────────┬──────────┬──────────┬──────────┬─────────────┐
-  │  train   │  train   │  train   │  train   │   PREDICT   │
-  └──────────┴──────────┴──────────┴──────────┴─────────────┘
-
-  Result: Every sample now has an OOF probability from each base model
-          ↓
-  Meta-learner (Logistic Regression) trains on these OOF probabilities
-          ↓
-  Final base models re-trained on FULL dataset
-          ↓
-  Model saved to saved_model.pkl
+  Feature   Value   Meaning
+  ───────────────────────────────────────────────────────────
+  [0]         2     Scan type ID  (Process=2, Network=3 …)
+  [1]         3     Severity      (HIGH=3, MED=2, LOW=1)
+  [2]      4444     Raw port number
+  [3]         0     Is well-known port?  (1–1023)
+  [4]         0     Is registered port?  (1024–49151)
+  [5]         1     Known malware port?  (4444=YES)
+  [6]         1     Is system process name?  (svchost=YES)
+  [7]        11     Process name length  (capped at 64)
+  [8]        48     Reason string length  (capped at 256)
+  [9]         1     Keyword: "hidden from"
+  [10]        1     Keyword: "absent from psutil"
+  [11]        1     Keyword: "wmic"
+  [12]        0     Keyword: "netstat"
+  [13]        0     Keyword: "kernel-level evasion"
+  [14]        0     Keyword: "masquerade / wrong path"
+  [15]        0     Keyword: "inject / injected"
+  [16]        0     Keyword: " dll "
+  [17]        0     Keyword: temp directory path
+  [18]        0     Keyword: AppData / Downloads / Desktop path
+  [19]        0     Keyword: "unsigned / not signed"
+  [20]        0     Keyword: "parent / ppid"
+  [21]        0     Keyword: Run key / RunOnce
+  [22]        0     Keyword: "winlogon / userinit / shell"
+  [23]        0     Keyword: IFEO / debugger
+  [24]        0     Keyword: "malware port / C2"
+  [25]        0     Keyword: "hook / hooked"
+  [26]        0     Keyword: "shellcode / malfind"
+  [27]        0     Keyword: "hollow / dkom"
+  [28]        0     Keyword: "autostart / persistence"
+  [29]        0     Keyword: "scheduled task / schtasks"
+  [30]        0     Keyword: "WMI subscription"
+  [31]        0     Keyword: "service / imagepa"
+  [32]        0     Keyword: "appinit / lsa package"
+  [33]        0     Keyword: "visible in psutil but absent"
+  [34]        0     Keyword: "startup folder"
 ```
 
 ---
 
-### The Four Base Models — Why Each Was Chosen
+### Training Metrics
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         BASE MODEL ROLES                            │
-├──────────────────┬──────────────────────────────────────────────────┤
-│  Random Forest   │ Builds 200 decision trees on random subsets of   │
-│  (Bagging)       │ data and features. Averages results. Very robust  │
-│                  │ against noise and outliers. Low variance.         │
-│                  │ Good at: Catching broad, obvious threat patterns  │
-├──────────────────┼──────────────────────────────────────────────────┤
-│  Extra Trees     │ Like Random Forest but splits are chosen at       │
-│  (Extra Random)  │ random thresholds, not optimally. Faster and      │
-│                  │ produces very different trees to RF — low         │
-│                  │ correlation with RF = more diversity in ensemble. │
-│                  │ Good at: Adding variety, reducing overfitting     │
-├──────────────────┼──────────────────────────────────────────────────┤
-│  Gradient        │ Builds trees sequentially — each tree corrects   │
-│  Boosting        │ the errors of the one before it. Slower but       │
-│                  │ captures complex non-linear interactions between  │
-│                  │ features that bagging methods miss.               │
-│                  │ Good at: Subtle, complex threat combinations      │
-├──────────────────┼──────────────────────────────────────────────────┤
-│  XGBoost         │ Optimized gradient boosting with L1/L2           │
-│  (optional)      │ regularisation to prevent overfitting, column     │
-│                  │ subsampling, and parallel tree building.          │
-│                  │ Best single-model accuracy of the four.           │
-│                  │ Good at: High accuracy on structured tabular data │
-└──────────────────┴──────────────────────────────────────────────────┘
-```
-
-Each model sees the same 35 features but draws different conclusions due
-to their different mathematical approaches. The meta-learner then learns
-*which model was right* for each type of finding.
-
----
-
-### Feature Extraction — What Goes Into the Model
-
-Every scan finding is converted into a **35-dimensional numeric vector**
-before being fed to the ensemble:
-
-```
-  Raw Finding Dict
-  ─────────────────────────────────────────────────────────
-  {
-    "reason":   "Process hidden from psutil, visible in WMIC",
-    "severity": "HIGH",
-    "port":     4444,
-    "name":     "svchost.exe"
-  }
-  ─────────────────────────────────────────────────────────
-                            │
-                            ▼  extract_features()
-  ─────────────────────────────────────────────────────────
-  Feature Index │ Value │ Meaning
-  ──────────────┼───────┼──────────────────────────────────
-      [0]       │   2   │ Scan type ID (Process=2)
-      [1]       │   3   │ Severity ID  (HIGH=3)
-      [2]       │ 4444  │ Port number
-      [3]       │   0   │ Is well-known port? (No)
-      [4]       │   0   │ Is registered port? (No)
-      [5]       │   1   │ Known malware port? (YES — 4444)
-      [6]       │   1   │ System process name? (svchost=Yes)
-      [7]       │  11   │ Name length (len("svchost.exe"))
-      [8]       │  48   │ Reason string length
-      [9]       │   1   │ "hidden from" keyword? (YES)
-      [10]      │   1   │ "absent from psutil" keyword? (YES)
-      [11]      │   1   │ "wmic" keyword? (YES)
-      [12]      │   0   │ "netstat" keyword? (No)
-      ...       │  ...  │ ...
-      [30]      │   0   │ "malfind/shellcode" keyword? (No)
-      [34]      │   0   │ "visible in psutil but absent" (No)
-  ─────────────────────────────────────────────────────────
-                            │
-                            ▼  StandardScaler
-  [0.2, 1.5, 3.1, -0.4, -0.4, 2.3, 0.8, -0.3, 0.1, 2.1 ...]
-  (all values normalized to mean=0, std=1)
-                            │
-                            ▼  Stacking Ensemble
-                      { category: "ROOTKIT_PROCESS",
-                        confidence: 0.94 }
-```
-
----
-
-### Meta-Learner — Logistic Regression
-
-The meta-learner receives a matrix of OOF probabilities from all base
-models and learns a weighted combination of their opinions:
-
-```
-  Input to Meta-Learner (one row per training sample):
-
-  ┌────────────┬────────────┬────────────┬────────────┐
-  │  RF probas │  ET probas │  GB probas │ XGB probas │
-  ├────────────┼────────────┼────────────┼────────────┤
-  │ 0.91  0.09 │ 0.88  0.12 │ 0.85  0.15 │ 0.93  0.07 │  ← sample 1
-  │ 0.12  0.88 │ 0.10  0.90 │ 0.20  0.80 │ 0.08  0.92 │  ← sample 2
-  │ 0.55  0.45 │ 0.60  0.40 │ 0.45  0.55 │ 0.52  0.48 │  ← sample 3
-  └────────────┴────────────┴────────────┴────────────┘
-                            │
-                  LogisticRegression.fit()
-                  (multinomial, lbfgs solver, C=1.0)
-                            │
-                            ▼
-       Learns: "For this type of feature pattern, trust XGBoost
-                more. For noisy/borderline cases, trust Gradient
-                Boosting's conservative estimates."
-```
-
----
-
-### Training Metrics Explained
-
-After training, these metrics are saved to `ml_model/model_meta.json`
-and displayed in the **Model Info** tab of the GUI:
+Saved to `ml_model/model_meta.json` and displayed in the **Model Info** tab:
 
 | Metric | What it means |
 |---|---|
-| **CV Accuracy** | Average accuracy across all 5 folds — main reliability indicator |
-| **F1 Macro** | Harmonic mean of precision+recall, equal weight per class — best for imbalanced data |
+| **CV Accuracy** | Mean accuracy across 5 stratified folds |
+| **F1 Macro** | Harmonic mean of precision + recall, equal weight per class — best indicator for imbalanced multi-class |
 | **F1 Weighted** | Same but weighted by class frequency |
-| **Precision** | Of everything flagged as threat, how many were actually threats |
-| **Recall** | Of all real threats, how many did the model catch |
-| **AUC-ROC** | Area Under the ROC Curve — 1.0 = perfect, 0.5 = random guessing |
-
-```
-  Precision vs Recall Trade-off:
-
-  High Precision, Low Recall          High Recall, Low Precision
-  ──────────────────────────          ──────────────────────────
-  Few false alarms but misses         Catches everything but
-  some real threats                   generates false positives
-        ↑                                       ↑
-  ShieldScan balances both via F1 score and the RAG false-positive
-  filter which suppresses known-benign entries after ML classification
-```
+| **Precision Macro** | Of everything flagged as a threat, how many were actually threats |
+| **Recall Macro** | Of all real threats, how many did the model catch |
+| **AUC-ROC** | Area under the ROC curve — 1.0 = perfect, 0.5 = random |
 
 ---
 
-### Why Stacking Beats a Single Model
+### Threat Categories
 
 ```
-  Experiment: Same dataset, same features
-
-  ┌─────────────────────┬──────────┬───────┬────────┐
-  │ Model               │ Accuracy │  F1   │ AUC    │
-  ├─────────────────────┼──────────┼───────┼────────┤
-  │ Random Forest only  │  87.2%   │ 0.861 │ 0.934  │
-  │ Extra Trees only    │  86.5%   │ 0.854 │ 0.929  │
-  │ Gradient Boosting   │  88.9%   │ 0.878 │ 0.941  │
-  │ XGBoost only        │  90.1%   │ 0.893 │ 0.952  │
-  ├─────────────────────┼──────────┼───────┼────────┤
-  │ Stacking Ensemble   │  92.4%   │ 0.917 │ 0.968  │  ← ShieldScan
-  └─────────────────────┴──────────┴───────┴────────┘
-
-  The ensemble consistently outperforms any individual model by 2-5%
-  because the meta-learner corrects the systematic errors each base
-  model makes on different regions of the threat landscape.
+  ┌──────────────────────────┬──────────────────────────────────────────┐
+  │ Category                 │ Example Findings                         │
+  ├──────────────────────────┼──────────────────────────────────────────┤
+  │ ROOTKIT_PROCESS          │ PID hidden from psutil, visible in WMIC  │
+  │ ROOTKIT_DRIVER           │ Unsigned / unknown kernel driver         │
+  │ ROOTKIT_NETWORK          │ Orphan socket, hidden TCP connection      │
+  │ ROOTKIT_REGISTRY         │ IFEO hijack, hidden Run key              │
+  │ ROOTKIT_MEMORY           │ Shellcode, DKOM, process hollowing       │
+  │ PROCESS_INJECTION        │ Injected DLL, hollow process             │
+  │ MALWARE_PORT             │ Connection on known C2 port              │
+  │ PERSISTENCE              │ Suspicious scheduled task / service      │
+  │ KERNEL_HOOK              │ SSDT / IAT hook detected                 │
+  │ FIM_VIOLATION            │ Critical system file modified            │
+  │ MASQUERADE               │ System binary running from wrong path    │
+  │ SUSPICIOUS               │ Anomalous but not conclusive             │
+  │ BENIGN                   │ Known-good system activity               │
+  └──────────────────────────┴──────────────────────────────────────────┘
 ```
 
----
-
-### Threat Categories the Model Predicts
-
-```
-  ┌─────────────────────────┬────────────────────────────────────────┐
-  │ Category                │ Example Findings                       │
-  ├─────────────────────────┼────────────────────────────────────────┤
-  │ ROOTKIT_PROCESS         │ Process hidden from psutil/WMIC        │
-  │ ROOTKIT_DRIVER          │ Unsigned/unknown kernel driver         │
-  │ ROOTKIT_NETWORK         │ Orphan socket, hidden connection       │
-  │ ROOTKIT_REGISTRY        │ IFEO hijack, hidden Run key            │
-  │ ROOTKIT_MEMORY          │ Shellcode, DKOM, process hollowing     │
-  │ MALWARE_PORT            │ Connection to known C2 port            │
-  │ PERSISTENCE             │ Suspicious scheduled task / service    │
-  │ SUSPICIOUS              │ Anomalous but not conclusively rootkit │
-  │ BENIGN                  │ Known-good system activity             │
-  └─────────────────────────┴────────────────────────────────────────┘
-```
-
-Each prediction also returns **MITRE ATT&CK technique IDs** (e.g. T1014,
-T1055, T1547) and step-by-step remediation guidance via `remediation.py`.
+Each prediction also returns **MITRE ATT&CK technique IDs** (T1014, T1055, T1547 …) and step-by-step remediation guidance.
 
 ---
 
 ## Security & Privacy
 
-- **No telemetry.** No data is ever sent to any external server.
-- **RAG filter is 100% local** — it uses only `difflib` (Python stdlib) and a local JSON file. An import-time guard blocks any accidental network import.
-- `email_config.json` (contains SMTP credentials) is excluded from version control via `.gitignore`.
+- **100% offline.** ShieldScan never opens a network socket of its own.
+- **No telemetry.** No scan data, process names, or file paths ever leave the machine.
+- **RAG filter is local-only** — uses only `difflib` (Python stdlib) and a local JSON file. An import-time guard blocks any accidental network import.
+- **Local accounts** — passwords stored as SHA-256 hashes in `users.json` (excluded from version control by `.gitignore`).
+- `email_config.json` (SMTP credentials) is also excluded from version control.
 
 ---
 
