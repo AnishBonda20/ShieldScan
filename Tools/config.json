@@ -1,0 +1,20 @@
+{
+  "dumpit_path": "",
+  "volatility_path": "",
+  "output_dir": "logs",
+  "scan_timeout": 300,
+  "scans": {
+    "process": true,
+    "driver": true,
+    "network": true,
+    "registry": true,
+    "memory": false
+  },
+  "ignore": {
+    "process_names": [],
+    "ports": [],
+    "driver_names": [],
+    "pids": [],
+    "reason_contains": []
+  }
+}

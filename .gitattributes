@@ -1,0 +1,15 @@
+# Normalize line endings to LF in the repo; checkout as CRLF on Windows
+* text=auto
+
+# Force LF for Python and config files always
+*.py   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.bat  text eol=crlf
+
+# Treat binaries as binary (no line-ending conversion)
+*.pkl  binary
+*.exe  binary
+*.dll  binary
+*.so   binary

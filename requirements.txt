@@ -1,0 +1,17 @@
+# Core ML
+numpy>=1.24
+scikit-learn>=1.3
+
+# Optional — adds XGBoost as a 4th base model in the stacking ensemble
+# xgboost>=2.0
+
+# Optional — required for "Save Report as Image" feature
+# Pillow>=10.0
+
+# System inspection (Windows)
+psutil>=5.9
+pywin32>=306
+wmi>=1.5
+
+# Volatility 3 (memory forensics) — included in Tools/volatility3/
+# No pip install needed; used directly from the bundled submodule.
